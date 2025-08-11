@@ -1,18 +1,18 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import MongoClient
-from typing import List, Any
+from typing import List, Any, Optional
+from datetime import datetime
 import os
 
 app = FastAPI()
 
-# Allow CORS for your frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can restrict this to your React app's URL later
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # This enables OPTIONS requests too
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -38,14 +38,54 @@ class FormData(BaseModel):
     twoWInsuranceExpiry: str = ""
     fourWInsuranceExpiry: str = ""
     referredBy: str = ""
+    createdAt: str = ""  # ISO date string
 
 @app.post("/upload")
 def upload_data(form_data: FormData):
+    form_data.createdAt = datetime.utcnow().isoformat()
     result = collection.insert_one(form_data.dict())
     if not result.acknowledged:
         raise HTTPException(status_code=500, detail="Failed to insert data.")
     return {"inserted_id": str(result.inserted_id)}
 
 @app.get("/fetch", response_model=List[Any])
-def fetch_data():
-    return list(collection.find({}, {"_id": 0}))
+def fetch_data(
+    search: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    query = {}
+    
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}}
+        ]
+    
+    if start_date and end_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+            end_dt = datetime.fromisoformat(end_date)
+            query["createdAt"] = {
+                "$gte": start_dt.isoformat(),
+                "$lte": end_dt.isoformat()
+            }
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+    
+    return list(collection.find(query, {"_id": 0}))
+
+@app.put("/update/{phone}")
+def update_data(phone: str, updated_data: FormData):
+    result = collection.update_one({"phone": phone}, {"$set": updated_data.dict()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"message": "Updated successfully"}
+
+@app.delete("/delete/{phone}")
+def delete_data(phone: str):
+    result = collection.delete_one({"phone": phone})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"message": "Deleted successfully"}
